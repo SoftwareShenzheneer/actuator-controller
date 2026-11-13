@@ -10,7 +10,7 @@ Windows + IDF_v6.1_Powershell
 
 2. Navigate to build/ dir
 ```
-cd "\\wsl.localhost\Ubuntu-22.04\home\tomi\projects\actuator-driver\build"
+cd "\\wsl.localhost\Ubuntu-22.04\home\tomi\projects\actuator-controller\build"
 ```
 
 3. run flash command
