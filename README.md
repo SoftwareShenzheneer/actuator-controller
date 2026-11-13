@@ -1,5 +1,5 @@
-# actuator-driver
-esp32 based driver of the actuators
+# actuator-controller
+esp32s3 based actuator controller. It receives information from the actuator driver and provides this on a display using LVGL.
 
 ## On Windows
 
