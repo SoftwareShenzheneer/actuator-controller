@@ -7,6 +7,10 @@
  *   ui_background    536x240  LV_IMG_CF_TRUE_COLOR
  *   ui_connected     302x64   LV_IMG_CF_TRUE_COLOR_ALPHA
  *   ui_disconnected  325x63   LV_IMG_CF_TRUE_COLOR_ALPHA
+ *
+ * A button press cycles the display through a three-screen carousel:
+ *   disconnected -> connected -> empty -> disconnected -> ...
+ * The "empty" screen shows only the background, with no status overlay.
  */
 #include <stdbool.h>
 #include "esp_log.h"
@@ -14,11 +18,6 @@
 #include "ui.h"
 
 static const char *TAG = "UI";
-
-/* Toggle the overlays every 2 s so the rendering can be checked without BT.
- * Set to 0 once ui_set_bt_connected() is called from the real BT event. */
-#define UI_BT_DEMO_TOGGLE 1
-#define UI_BT_DEMO_PERIOD_MS 2000
 
 /* Overlay position over the background's status area. */
 #define UI_OVERLAY_X 170
@@ -30,32 +29,48 @@ extern const lv_img_dsc_t ui_disconnected;
 
 static lv_obj_t *overlay_connected;
 static lv_obj_t *overlay_disconnected;
-static bool bt_connected;
+static ui_screen_t current_screen;
 
-void ui_set_bt_connected(bool connected)
+static void ui_show_screen(ui_screen_t screen)
 {
-    bt_connected = connected;
+    current_screen = screen;
 
     if (overlay_connected == NULL || overlay_disconnected == NULL) {
         return;
     }
 
-    if (connected) {
+    switch (screen) {
+    case UI_SCREEN_CONNECTED:
         lv_obj_clear_flag(overlay_connected, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(overlay_disconnected, LV_OBJ_FLAG_HIDDEN);
-    } else {
+        break;
+    case UI_SCREEN_DISCONNECTED:
         lv_obj_add_flag(overlay_connected, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(overlay_disconnected, LV_OBJ_FLAG_HIDDEN);
+        break;
+    case UI_SCREEN_EMPTY:
+    default:
+        lv_obj_add_flag(overlay_connected, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(overlay_disconnected, LV_OBJ_FLAG_HIDDEN);
+        break;
     }
 }
 
-#if UI_BT_DEMO_TOGGLE
-static void bt_demo_timer_cb(lv_timer_t *timer)
+void ui_next_screen(void)
 {
-    (void)timer;
-    ui_set_bt_connected(!bt_connected);
+    switch (current_screen) {
+    case UI_SCREEN_DISCONNECTED:
+        ui_show_screen(UI_SCREEN_CONNECTED);
+        break;
+    case UI_SCREEN_CONNECTED:
+        ui_show_screen(UI_SCREEN_EMPTY);
+        break;
+    case UI_SCREEN_EMPTY:
+    default:
+        ui_show_screen(UI_SCREEN_DISCONNECTED);
+        break;
+    }
 }
-#endif
 
 void ui_init(void)
 {
@@ -86,9 +101,5 @@ void ui_init(void)
     lv_img_set_src(overlay_disconnected, &ui_disconnected);
     lv_obj_set_pos(overlay_disconnected, UI_OVERLAY_X, UI_OVERLAY_Y);
 
-    ui_set_bt_connected(false);
-
-#if UI_BT_DEMO_TOGGLE
-    lv_timer_create(bt_demo_timer_cb, UI_BT_DEMO_PERIOD_MS, NULL);
-#endif
+    ui_show_screen(UI_SCREEN_DISCONNECTED);
 }

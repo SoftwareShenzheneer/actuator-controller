@@ -12,6 +12,7 @@
 #include <assert.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -20,6 +21,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "driver/uart.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "lvgl.h"
@@ -36,9 +38,15 @@ static const char *TAG = "main";
 #define EXAMPLE_LVGL_TASK_STACK_SIZE (4 * 1024)
 #define EXAMPLE_LVGL_TASK_PRIORITY 2
 
+/* Button that cycles the UI carousel. BOARD_BUTTON1_PIN is the BOOT button
+ * (GPIO0) on the T-Display S3 AMOLED. */
+#define BUTTON_GPIO           BOARD_BUTTON1_PIN
+#define BUTTON_DEBOUNCE_MS    50
+
 static SemaphoreHandle_t lvgl_mux = NULL;
 static lv_disp_draw_buf_t disp_buf; // contains internal graphic buffer(s) called draw buffer(s)
 lv_disp_drv_t disp_drv;      // contains callback functions
+static QueueHandle_t button_evt_queue = NULL;
 
 static void example_lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
 {
@@ -73,6 +81,101 @@ bool example_lvgl_lock(int timeout_ms)
 void example_lvgl_unlock(void)
 {
     xSemaphoreGiveRecursive(lvgl_mux);
+}
+
+static void IRAM_ATTR button_isr_handler(void *arg)
+{
+    uint32_t gpio_num = (uint32_t)(uintptr_t)arg;
+    BaseType_t higher_priority_task_woken = pdFALSE;
+    xQueueSendFromISR(button_evt_queue, &gpio_num, &higher_priority_task_woken);
+    if (higher_priority_task_woken == pdTRUE) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+static void button_task(void *arg)
+{
+    (void)arg;
+    uint32_t gpio_num;
+
+    while (true) {
+        if (xQueueReceive(button_evt_queue, &gpio_num, portMAX_DELAY)) {
+            /* Debounce: ignore the edge if the button is no longer held. */
+            vTaskDelay(pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS));
+            if (gpio_get_level((gpio_num_t)gpio_num) == 0) {
+                if (example_lvgl_lock(-1)) {
+                    ui_next_screen();
+                    example_lvgl_unlock();
+                }
+            }
+        }
+    }
+}
+
+static void button_init(void)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << BUTTON_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+    button_evt_queue = xQueueCreate(1, sizeof(uint32_t));
+    assert(button_evt_queue);
+
+    ESP_ERROR_CHECK(gpio_install_isr_service(0));
+    ESP_ERROR_CHECK(gpio_isr_handler_add(BUTTON_GPIO, button_isr_handler,
+                                         (void *)(uintptr_t)BUTTON_GPIO));
+    xTaskCreate(button_task, "button", 2048, NULL, 10, NULL);
+}
+
+/* Temporary UART ping/pong responder. The other board sends "ping"; this
+ * replies "pong\n" on UART1 (GPIO10 RX / GPIO11 TX). Remove once verified. */
+#define TEST_UART_NUM     UART_NUM_1
+#define TEST_UART_TX_PIN  11
+#define TEST_UART_RX_PIN  10
+#define TEST_UART_BAUD    921600
+
+static void uart_pingpong_task(void *arg)
+{
+    (void)arg;
+    const uart_config_t uart_config = {
+        .baud_rate = TEST_UART_BAUD,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    ESP_ERROR_CHECK(uart_driver_install(TEST_UART_NUM, 1024, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(TEST_UART_NUM, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(TEST_UART_NUM, TEST_UART_TX_PIN, TEST_UART_RX_PIN,
+                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+
+    ESP_LOGI(TAG, "UART1 ping/pong responder ready (GPIO10 RX / GPIO11 TX)");
+
+    static const char ping[] = "ping";
+    static const char pong[] = "pong\n";
+    uint8_t byte;
+    int match = 0;
+
+    while (1) {
+        if (uart_read_bytes(TEST_UART_NUM, &byte, 1, portMAX_DELAY) == 1) {
+            ESP_LOGI(TAG, "Rx: '%c' (0x%02x)", byte, byte);
+            if (byte == (uint8_t)ping[match]) {
+                if (++match == (int)(sizeof(ping) - 1)) {
+                    uart_write_bytes(TEST_UART_NUM, pong, sizeof(pong) - 1);
+                    ESP_LOGI(TAG, "ping -> pong");
+                    match = 0;
+                }
+            } else {
+                match = (byte == (uint8_t)ping[0]) ? 1 : 0;
+            }
+        }
+    }
 }
 
 static void example_lvgl_port_task(void *arg)
@@ -149,4 +252,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Create LVGL task");
     xTaskCreate(example_lvgl_port_task, "LVGL", EXAMPLE_LVGL_TASK_STACK_SIZE, NULL, tskIDLE_PRIORITY, NULL);
 
+    button_init();
+
+    xTaskCreate(uart_pingpong_task, "pingpong", 2048, NULL, 5, NULL);
 }

@@ -15,11 +15,19 @@
 extern "C" {
 #endif
 
+/* Screens in the button-driven carousel. */
+typedef enum {
+    UI_SCREEN_DISCONNECTED,
+    UI_SCREEN_CONNECTED,
+    UI_SCREEN_EMPTY,
+} ui_screen_t;
+
 /* Build the initial screen. */
 void ui_init(void);
 
-/* Show the connected or disconnected BT overlay. */
-void ui_set_bt_connected(bool connected);
+/* Advance to the next screen in the carousel:
+ * disconnected -> connected -> empty -> disconnected -> ... */
+void ui_next_screen(void);
 
 #ifdef __cplusplus
 }
